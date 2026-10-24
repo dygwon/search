@@ -2,9 +2,15 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+from locus_core.db import connect
+from locus_core.qdrant_store import QdrantStore
+from qdrant_client import AsyncQdrantClient
 from typer.testing import CliRunner
 
-from locus.cli import app
+from locus import cli
+from locus.cli import Services, app
+from tests.fakes import BGE_SMALL, FakeResolver
 
 runner = CliRunner()
 
@@ -54,3 +60,51 @@ def test_up_fails_when_compose_fails(monkeypatch, tmp_path):
     result = runner.invoke(app, ["up"])
 
     assert result.exit_code == 1
+
+
+@pytest.fixture
+def services(monkeypatch, tmp_path):
+    services = Services(
+        conn=connect(tmp_path),
+        store=QdrantStore(AsyncQdrantClient(":memory:")),
+        resolver=FakeResolver(BGE_SMALL),
+    )
+    monkeypatch.setattr(cli, "build_services", lambda settings: services)
+    return services
+
+
+def test_index_create_confirms_name_and_chunk_budget(services):
+    result = runner.invoke(app, ["index", "create", "notes"])
+
+    assert result.exit_code == 0
+    assert "Created index 'notes'" in result.output
+    assert "chunk target 512 tokens (ceiling 512)" in result.output
+
+
+def test_index_create_says_when_the_target_is_capped(services):
+    result = runner.invoke(app, ["index", "create", "notes", "--target", "2000"])
+
+    assert result.exit_code == 0
+    assert "Target 2000 exceeds the ceiling; capped to 512" in result.output
+
+
+def test_index_create_refuses_a_duplicate_name(services):
+    runner.invoke(app, ["index", "create", "notes"])
+
+    result = runner.invoke(app, ["index", "create", "notes"])
+
+    assert result.exit_code == 1
+    assert "an index named 'notes' already exists" in result.output
+
+
+def test_index_list_shows_each_index_with_its_dense_model(services):
+    runner.invoke(app, ["index", "create", "notes"])
+    runner.invoke(app, ["index", "create", "papers", "--target", "256"])
+
+    result = runner.invoke(app, ["index", "list"])
+
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        "notes   BAAI/bge-small-en-v1.5@5c38ec7  target 512",
+        "papers  BAAI/bge-small-en-v1.5@5c38ec7  target 256",
+    ]
