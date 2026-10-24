@@ -27,8 +27,13 @@ locus-search = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not docker'"
-markers = ["docker: needs a running Docker daemon (run with -m docker)"]
+addopts = "-m 'not docker and not network'"
+markers = [
+    "docker: needs a running Docker daemon (run with -m docker)",
+    "network: talks to the Hugging Face Hub (run with -m network)",
+]
+# In-memory Qdrant ignores payload indexes; tests/test_qdrant_schema.py covers them on a server.
+filterwarnings = ["ignore:Payload indexes have no effect in the local Qdrant:UserWarning"]
 
 [tool.ruff]
 line-length = 100
@@ -38,6 +43,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [dependency-groups]
 dev = [
+    "anyio>=4.15.1",
     "pytest>=9.1.1",
     "ruff>=0.17.2",
 ]
