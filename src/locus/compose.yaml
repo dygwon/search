@@ -1,0 +1,15 @@
+# Qdrant runs in Docker because it needs no GPU. Ports carry the 127.0.0.1
+# prefix: without it Docker publishes them on every interface.
+name: locus
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333" # REST
+      - "127.0.0.1:6334:6334" # gRPC
+    environment:
+      QDRANT__SERVICE__API_KEY: ${LOCUS_QDRANT_API_KEY:-}
+    volumes:
+      - ${LOCUS_DATA_DIR:?LOCUS_DATA_DIR must be set}/qdrant:/qdrant/storage
