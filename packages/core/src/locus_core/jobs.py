@@ -2,7 +2,7 @@
 
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 
@@ -14,6 +14,25 @@ def run_stage[T](
     _update(conn, job_id, "running", new_attempt=True)
     try:
         result = fn()
+    except Exception as exc:
+        _update(conn, job_id, "failed", error=f"{type(exc).__name__}: {exc}")
+        raise
+    _update(conn, job_id, "done")
+    return result
+
+
+async def run_stage_async[T](
+    conn: sqlite3.Connection,
+    index_id: str,
+    doc_hash: str,
+    stage: str,
+    fn: Callable[[], Awaitable[T]],
+) -> T:
+    """run_stage for a stage that awaits, such as a Qdrant write."""
+    job_id = _job_id(conn, index_id, doc_hash, stage)
+    _update(conn, job_id, "running", new_attempt=True)
+    try:
+        result = await fn()
     except Exception as exc:
         _update(conn, job_id, "failed", error=f"{type(exc).__name__}: {exc}")
         raise

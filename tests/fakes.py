@@ -1,5 +1,13 @@
-from docling_core.types.doc import DocItemLabel, DoclingDocument
+import hashlib
+import math
+import random
+import zlib
+from collections import Counter
+
+from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
+from docling_core.types.doc import DocItemLabel, DoclingDocument, TableCell, TableData
 from locus_core.models import ResolvedModel
+from locus_core.protocols import SparseVector
 
 BGE_SMALL = ResolvedModel(
     repo_id="BAAI/bge-small-en-v1.5",
@@ -73,3 +81,68 @@ def write_pdf(path, text="Hello Locus", title=None):
     )
     path.write_bytes(bytes(out))
     return path
+
+
+class WhitespaceTokenizer(BaseTokenizer):
+    """Stands in for a Hugging Face tokenizer: one token per whitespace-separated word."""
+
+    max_tokens: int = 512
+
+    def count_tokens(self, text):
+        return len(text.split())
+
+    def get_max_tokens(self):
+        return self.max_tokens
+
+    def get_tokenizer(self):
+        return self.count_tokens
+
+
+def table_data(rows):
+    """A table whose first row is the column header."""
+    cells = [
+        TableCell(
+            text=text,
+            start_row_offset_idx=r,
+            end_row_offset_idx=r + 1,
+            start_col_offset_idx=c,
+            end_col_offset_idx=c + 1,
+            column_header=r == 0,
+        )
+        for r, row in enumerate(rows)
+        for c, text in enumerate(row)
+    ]
+    return TableData(num_rows=len(rows), num_cols=len(rows[0]), table_cells=cells)
+
+
+class FakeDenseEmbedder:
+    """Stands in for sentence-transformers: unit vectors seeded by the text's hash."""
+
+    def __init__(self, dim=384, fail_with=None):
+        self.dim = dim
+        self.fail_with = fail_with
+        self.calls = 0
+
+    def embed_documents(self, texts):
+        self.calls += 1
+        if self.fail_with:
+            raise self.fail_with
+        return [self.embed_query(text) for text in texts]
+
+    def embed_query(self, text):
+        rng = random.Random(hashlib.sha256(text.encode()).digest())
+        vector = [rng.gauss(0, 1) for _ in range(self.dim)]
+        norm = math.sqrt(sum(x * x for x in vector))
+        return [x / norm for x in vector]
+
+
+class FakeSparseEmbedder:
+    """Stands in for FastEmbed BM25: one term frequency per hashed word."""
+
+    def embed_documents(self, texts):
+        return [self.embed_query(text) for text in texts]
+
+    def embed_query(self, text):
+        counts = Counter(zlib.crc32(word.lower().encode()) % 100_000 for word in text.split())
+        indices = sorted(counts)
+        return SparseVector(indices=indices, values=[float(counts[i]) for i in indices])

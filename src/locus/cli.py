@@ -2,6 +2,7 @@ import asyncio
 import os
 import sqlite3
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -11,6 +12,7 @@ import typer
 from locus_core.db import connect
 from locus_core.indexes import (
     DEFAULT_TARGET,
+    Index,
     IndexExistsError,
     IndexNotFoundError,
     create_index,
@@ -20,8 +22,7 @@ from locus_core.indexes import (
 from locus_core.models import ModelResolver
 from locus_core.qdrant_store import QdrantStore
 from locus_core.settings import Settings
-from locus_ingest.parse import DocumentParser
-from locus_ingest.pipeline import ingest_file
+from locus_ingest.pipeline import Backends, ingest_file
 
 app = typer.Typer(no_args_is_help=True, help="Local, search-first RAG for sensitive documents.")
 index_app = typer.Typer(no_args_is_help=True, help="Create and inspect indexes.")
@@ -35,14 +36,16 @@ class Services:
     conn: sqlite3.Connection
     store: QdrantStore
     resolver: ModelResolver
-    parser: DocumentParser
+    # The tokenizer and embedders follow the index's pinned bundle.
+    backends: Callable[[Index], Backends]
 
 
 def build_services(settings: Settings) -> Services:
     """The one place real backends are constructed; tests replace it."""
     from locus_core.models import HfModelResolver
-    from locus_ingest.parse import DoclingParser
     from qdrant_client import AsyncQdrantClient
+
+    from locus.backends import real_backends
 
     client = AsyncQdrantClient(
         url=settings.qdrant_url, api_key=settings.qdrant_api_key, prefer_grpc=True
@@ -51,7 +54,7 @@ def build_services(settings: Settings) -> Services:
         conn=connect(settings.data_dir),
         store=QdrantStore(client),
         resolver=HfModelResolver(),
-        parser=DoclingParser(),
+        backends=real_backends,
     )
 
 
@@ -108,7 +111,7 @@ def ingest(
     ],
     index: Annotated[str, typer.Option(help="Index to add the files to.")],
 ) -> None:
-    """Register and parse PDFs into an index. Files are read in place, never copied."""
+    """Chunk, embed and index PDFs. Files are read in place, never copied."""
     settings = Settings()
     services = build_services(settings)
     try:
@@ -116,18 +119,29 @@ def ingest(
     except IndexNotFoundError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
-    failed = False
-    for path in paths:
-        try:
-            result = ingest_file(services.conn, services.parser, settings.data_dir, target, path)
-        # One bad file shouldn't stop the batch; its jobs row keeps the error.
-        except Exception as exc:
-            typer.echo(f"Error: {path}: {exc}", err=True)
-            failed = True
-            continue
-        status = "cached" if result.cached else "parsed"
-        typer.echo(f"{status}  {result.doc_hash[:12]}  {result.title}  ({path.name})")
-    if failed:
+    backends = services.backends(target)
+
+    # One event loop for the whole batch: the gRPC client is bound to the loop it starts on.
+    async def ingest_all() -> bool:
+        failed = False
+        for path in paths:
+            try:
+                result = await ingest_file(
+                    services.conn, services.store, backends, settings.data_dir, target, path
+                )
+            # One bad file shouldn't stop the batch; its jobs row keeps the error.
+            except Exception as exc:
+                typer.echo(f"Error: {path}: {exc}", err=True)
+                failed = True
+                continue
+            chunks = f"{result.chunks} chunk{'s' if result.chunks != 1 else ''}"
+            typer.echo(
+                f"{result.status:<9}  {result.doc_hash[:12]}  {result.title}"
+                f"  ({chunks}, {path.name})"
+            )
+        return failed
+
+    if asyncio.run(ingest_all()):
         raise typer.Exit(1)
 
 

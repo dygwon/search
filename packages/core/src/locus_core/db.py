@@ -46,8 +46,9 @@ CREATE TABLE IF NOT EXISTS index_members (
     PRIMARY KEY (index_id, source_path)
 );
 
+-- The same document chunked the same way gets the same chunk_id in every index.
 CREATE TABLE IF NOT EXISTS chunks (
-    chunk_id     TEXT PRIMARY KEY,
+    chunk_id     TEXT NOT NULL,
     index_id     TEXT NOT NULL REFERENCES indexes (index_id),
     doc_hash     TEXT NOT NULL REFERENCES documents (doc_hash),
     ordinal      INTEGER NOT NULL,
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     bbox         TEXT,
     modality     TEXT NOT NULL,
     text         TEXT NOT NULL,
-    token_counts TEXT NOT NULL
+    token_counts TEXT NOT NULL,
+    PRIMARY KEY (index_id, chunk_id)
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
