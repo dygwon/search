@@ -27,7 +27,7 @@ class Backends:
     dense: DenseEmbedder
     sparse: SparseEmbedder
     # Tokens the dense model adds around every input, outside the tokenizer's count.
-    special_tokens: int = 0
+    special_tokens: int
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,9 @@ async def ingest_file(
 
     def stage(name, fn):
         return run_stage(conn, index.index_id, doc_hash, name, fn)
+
+    async def astage(name, fn):
+        return await run_stage_async(conn, index.index_id, doc_hash, name, fn)
 
     def done(name):
         return stage_done(conn, index.index_id, doc_hash, name)
@@ -93,13 +96,7 @@ async def ingest_file(
             lambda: embed(conn, data_dir, index, backends.dense, backends.sparse, doc_hash),
         )
     if "upsert" in pending:
-        await run_stage_async(
-            conn,
-            index.index_id,
-            doc_hash,
-            "upsert",
-            lambda: upsert(conn, store, data_dir, index, doc_hash),
-        )
+        await astage("upsert", lambda: upsert(conn, store, data_dir, index, doc_hash))
     [chunks] = conn.execute(
         "SELECT count(*) FROM chunks WHERE index_id = ? AND doc_hash = ?",
         (index.index_id, doc_hash),

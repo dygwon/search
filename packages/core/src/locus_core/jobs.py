@@ -2,7 +2,8 @@
 
 import sqlite3
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 
@@ -10,15 +11,8 @@ def run_stage[T](
     conn: sqlite3.Connection, index_id: str, doc_hash: str, stage: str, fn: Callable[[], T]
 ) -> T:
     """Run one stage of one document's job, recording each attempt and how it ended."""
-    job_id = _job_id(conn, index_id, doc_hash, stage)
-    _update(conn, job_id, "running", new_attempt=True)
-    try:
-        result = fn()
-    except Exception as exc:
-        _update(conn, job_id, "failed", error=f"{type(exc).__name__}: {exc}")
-        raise
-    _update(conn, job_id, "done")
-    return result
+    with _attempt(conn, index_id, doc_hash, stage):
+        return fn()
 
 
 async def run_stage_async[T](
@@ -29,15 +23,20 @@ async def run_stage_async[T](
     fn: Callable[[], Awaitable[T]],
 ) -> T:
     """run_stage for a stage that awaits, such as a Qdrant write."""
+    with _attempt(conn, index_id, doc_hash, stage):
+        return await fn()
+
+
+@contextmanager
+def _attempt(conn: sqlite3.Connection, index_id: str, doc_hash: str, stage: str) -> Iterator[None]:
     job_id = _job_id(conn, index_id, doc_hash, stage)
     _update(conn, job_id, "running", new_attempt=True)
     try:
-        result = await fn()
+        yield
     except Exception as exc:
         _update(conn, job_id, "failed", error=f"{type(exc).__name__}: {exc}")
         raise
     _update(conn, job_id, "done")
-    return result
 
 
 def stage_done(conn: sqlite3.Connection, index_id: str, doc_hash: str, stage: str) -> bool:

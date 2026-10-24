@@ -100,3 +100,17 @@ def test_a_chunk_that_starts_with_a_table_has_table_modality():
     [chunk] = chunk_document(doc, WhitespaceTokenizer())
 
     assert chunk.modality == "table"
+
+
+def test_no_chunk_exceeds_the_budget_counting_special_tokens():
+    doc = DoclingDocument(name="long")
+    for section in range(4):
+        doc.add_heading(f"Section {section} on quarterly revenue")
+        for para in range(3):
+            words = " ".join(f"s{section}p{para}w{i}" for i in range(120))
+            doc.add_text(label=DocItemLabel.TEXT, text=words)
+
+    chunks = chunk_document(doc, WhitespaceTokenizer(max_tokens=62), special_tokens=2)
+
+    assert len(chunks) > 4
+    assert max(c.token_count for c in chunks) <= 64

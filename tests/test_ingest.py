@@ -56,6 +56,7 @@ def backends(parser=None, dense=None):
         tokenizer=WhitespaceTokenizer(max_tokens=100),
         dense=dense or FakeDenseEmbedder(),
         sparse=FakeSparseEmbedder(),
+        special_tokens=0,
     )
 
 

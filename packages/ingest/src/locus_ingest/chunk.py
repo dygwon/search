@@ -1,7 +1,8 @@
 """Chunk: split a parsed document into token-bounded chunks with character offsets.
 
-Offsets point into the document text (see docs/adr/0001-chunk-offsets.md), so they
-don't depend on the chunker and stay comparable across indexes.
+Offsets point into the document text, each item as the chunker's serializer renders it
+(docs/adr/0001-chunk-offsets.md). Plain text offsets are the same in every index; list,
+table and heading offsets can shift with a Docling upgrade.
 """
 
 import hashlib
@@ -10,6 +11,7 @@ import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass
+from importlib.metadata import version
 
 from docling_core.transforms.chunker import HybridChunker
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
@@ -17,6 +19,9 @@ from docling_core.types.doc import DocItemLabel, DoclingDocument
 from locus_core.indexes import Index
 
 ITEM_SEPARATOR = "\n\n"
+MERGE_PEERS = True
+# Fixed so chunk IDs are the same on every machine.
+CHUNK_NAMESPACE = uuid.UUID("6f0d1c4e-3b9a-4a57-9f53-2c1e8d7b5a10")
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +73,7 @@ def chunk_document(
     doc: DoclingDocument, tokenizer: BaseTokenizer, special_tokens: int = 0
 ) -> list[Chunk]:
     """Chunk doc within tokenizer's max_tokens, which excludes the model's special tokens."""
-    chunker = HybridChunker(tokenizer=tokenizer)
+    chunker = HybridChunker(tokenizer=tokenizer, merge_peers=MERGE_PEERS)
     texts = item_texts(doc, chunker)
     spans = item_spans(texts)
     # Where the last chunk ended inside each item, so repeated text isn't matched twice.
@@ -86,9 +91,6 @@ def chunk_document(
         first = doc_chunk.meta.doc_items[0]
         text = chunker.contextualize(doc_chunk)
         token_count = tokenizer.count_tokens(text) + special_tokens
-        if token_count > tokenizer.get_max_tokens() + special_tokens:
-            # The embedder truncates what doesn't fit, so the tail is lost from search.
-            logger.error("chunk %d has %d tokens and will be truncated", ordinal, token_count)
         prov = next((p for item in doc_chunk.meta.doc_items for p in item.prov), None)
         chunks.append(
             Chunk(
@@ -105,23 +107,19 @@ def chunk_document(
     return chunks
 
 
-def _locate(text: str, item_texts: list[str], cursor: int, delim: str) -> tuple[int, int] | None:
+def _locate(text: str, pieces: list[str], cursor: int, delim: str) -> tuple[int, int] | None:
     """Where text starts in the first item and ends in the last, relative to each item.
 
     The chunker joins items with delim; a chunk can begin partway through its first
     item and end partway through its last when an item was split.
     """
-    if len(item_texts) == 1:
-        start = item_texts[0].find(text, cursor)
+    if len(pieces) == 1:
+        start = pieces[0].find(text, cursor)
         return None if start < 0 else (start, start + len(text))
-    first, last = item_texts[0], item_texts[-1]
+    first, last = pieces[0], pieces[-1]
     start = next((k for k in range(cursor, len(first)) if text.startswith(first[k:] + delim)), None)
     end = next((e for e in range(len(last), 0, -1) if text.endswith(delim + last[:e])), None)
     return None if start is None or end is None else (start, end)
-
-
-# Fixed so chunk IDs are the same on every machine.
-CHUNK_NAMESPACE = uuid.UUID("6f0d1c4e-3b9a-4a57-9f53-2c1e8d7b5a10")
 
 
 def config_hash(index: Index, tokenizer: BaseTokenizer) -> str:
@@ -129,8 +127,11 @@ def config_hash(index: Index, tokenizer: BaseTokenizer) -> str:
     dense = index.bundle.dense
     config = [
         index.chunker_version,
+        # The serializer shapes the document text, so its version shapes the offsets.
+        f"docling-core/{version('docling-core')}",
         f"{dense.repo_id}@{dense.revision}",
         tokenizer.get_max_tokens(),
+        MERGE_PEERS,
     ]
     return hashlib.sha256(json.dumps(config).encode()).hexdigest()
 
@@ -145,11 +146,15 @@ def write_chunks(
     tokenizer: BaseTokenizer,
     doc_hash: str,
     doc: DoclingDocument,
-    special_tokens: int = 0,
+    special_tokens: int,
 ) -> int:
     """Chunk doc into the index's chunks rows, replacing any from an earlier attempt."""
     config = config_hash(index, tokenizer)
     chunks = chunk_document(doc, tokenizer, special_tokens)
+    for c in chunks:
+        if c.token_count > index.chunk_ceiling:
+            # The embedder truncates what doesn't fit, so the tail is lost from search.
+            logger.error("chunk %d has %d tokens and will be truncated", c.ordinal, c.token_count)
     rows = [
         (
             chunk_id(doc_hash, config, c.char_start, c.char_end),

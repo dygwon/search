@@ -82,6 +82,7 @@ def services(monkeypatch, tmp_path):
             tokenizer=WhitespaceTokenizer(),
             dense=FakeDenseEmbedder(),
             sparse=FakeSparseEmbedder(),
+            special_tokens=0,
         ),
     )
     monkeypatch.setattr(cli, "build_services", lambda settings: services)

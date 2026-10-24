@@ -33,7 +33,7 @@ SQLite in WAL mode is the system of record; Qdrant is a derived index that can b
 | parse\_cache | doc\_hash + parser\_version | path to the cached Docling JSON |
 | indexes | index\_id | name, model bundle with pinned revisions, chunk target and ceiling, chunker version, Qdrant collection and alias, status |
 | index\_members | index\_id + source\_path | current doc\_hash, status, updated\_at |
-| chunks | chunk\_id | index\_id, doc\_hash, ordinal, char\_start, char\_end, page, bbox, modality, text, token count per model |
+| chunks | index\_id + chunk\_id ([ADR 0001](adr/0001-chunk-offsets.md)) | doc\_hash, ordinal, char\_start, char\_end, page, bbox, modality, text, token count per model |
 | jobs | job\_id | index\_id, doc\_hash, stage, status, attempts, error, updated\_at |
 | model\_servers | server\_id | model ID, revision, kind, port, PID, status, last\_used |
 | query\_log | query\_id | index\_id, query text, per-stage ranked lists (only when run logging is on), timestamp |
