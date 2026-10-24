@@ -4,14 +4,24 @@ import sqlite3
 import subprocess
 from dataclasses import dataclass
 from importlib.resources import files
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from locus_core.db import connect
-from locus_core.indexes import DEFAULT_TARGET, IndexExistsError, create_index, list_indexes
+from locus_core.indexes import (
+    DEFAULT_TARGET,
+    IndexExistsError,
+    IndexNotFoundError,
+    create_index,
+    get_index,
+    list_indexes,
+)
 from locus_core.models import ModelResolver
 from locus_core.qdrant_store import QdrantStore
 from locus_core.settings import Settings
+from locus_ingest.parse import DocumentParser
+from locus_ingest.pipeline import ingest_file
 
 app = typer.Typer(no_args_is_help=True, help="Local, search-first RAG for sensitive documents.")
 index_app = typer.Typer(no_args_is_help=True, help="Create and inspect indexes.")
@@ -25,11 +35,13 @@ class Services:
     conn: sqlite3.Connection
     store: QdrantStore
     resolver: ModelResolver
+    parser: DocumentParser
 
 
 def build_services(settings: Settings) -> Services:
     """The one place real backends are constructed; tests replace it."""
     from locus_core.models import HfModelResolver
+    from locus_ingest.parse import DoclingParser
     from qdrant_client import AsyncQdrantClient
 
     client = AsyncQdrantClient(
@@ -39,6 +51,7 @@ def build_services(settings: Settings) -> Services:
         conn=connect(settings.data_dir),
         store=QdrantStore(client),
         resolver=HfModelResolver(),
+        parser=DoclingParser(),
     )
 
 
@@ -86,6 +99,36 @@ def index_list() -> None:
             f"{index.name:<{width}}  {dense.repo_id}@{dense.revision[:7]}"
             f"  target {index.chunk_target}"
         )
+
+
+@app.command()
+def ingest(
+    paths: Annotated[
+        list[Path], typer.Argument(exists=True, dir_okay=False, readable=True, help="PDFs to add.")
+    ],
+    index: Annotated[str, typer.Option(help="Index to add the files to.")],
+) -> None:
+    """Register and parse PDFs into an index. Files are read in place, never copied."""
+    settings = Settings()
+    services = build_services(settings)
+    try:
+        target = get_index(services.conn, index)
+    except IndexNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    failed = False
+    for path in paths:
+        try:
+            result = ingest_file(services.conn, services.parser, settings.data_dir, target, path)
+        # One bad file shouldn't stop the batch; its jobs row keeps the error.
+        except Exception as exc:
+            typer.echo(f"Error: {path}: {exc}", err=True)
+            failed = True
+            continue
+        status = "cached" if result.cached else "parsed"
+        typer.echo(f"{status}  {result.doc_hash[:12]}  {result.title}  ({path.name})")
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.callback()

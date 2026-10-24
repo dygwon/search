@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from locus import cli
 from locus.cli import Services, app
-from tests.fakes import BGE_SMALL, FakeResolver
+from tests.fakes import BGE_SMALL, FakeParser, FakeResolver, write_pdf
 
 runner = CliRunner()
 
@@ -68,6 +68,7 @@ def services(monkeypatch, tmp_path):
         conn=connect(tmp_path),
         store=QdrantStore(AsyncQdrantClient(":memory:")),
         resolver=FakeResolver(BGE_SMALL),
+        parser=FakeParser(),
     )
     monkeypatch.setattr(cli, "build_services", lambda settings: services)
     return services
@@ -108,3 +109,39 @@ def test_index_list_shows_each_index_with_its_dense_model(services):
         "notes   BAAI/bge-small-en-v1.5@5c38ec7  target 512",
         "papers  BAAI/bge-small-en-v1.5@5c38ec7  target 256",
     ]
+
+
+def test_ingest_reports_each_file_then_its_cache_hit(services, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_DATA_DIR", str(tmp_path / "data"))
+    pdf = write_pdf(tmp_path / "sample.pdf", title="Quarterly Notes")
+    runner.invoke(app, ["index", "create", "notes"])
+
+    first = runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
+    second = runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
+
+    assert first.exit_code == 0, first.output
+    assert re.fullmatch(r"parsed  [0-9a-f]{12}  Quarterly Notes  \(sample.pdf\)\n", first.output)
+    assert second.output.startswith("cached  ")
+
+
+def test_ingest_into_an_unknown_index_fails_clearly(services, tmp_path):
+    pdf = write_pdf(tmp_path / "sample.pdf")
+
+    result = runner.invoke(app, ["ingest", str(pdf), "--index", "nope"])
+
+    assert result.exit_code == 1
+    assert "no index named 'nope'" in result.output
+
+
+def test_ingest_keeps_going_past_a_bad_file_and_fails(services, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_DATA_DIR", str(tmp_path / "data"))
+    notes = tmp_path / "notes.txt"
+    notes.write_text("not a pdf")
+    pdf = write_pdf(tmp_path / "sample.pdf")
+    runner.invoke(app, ["index", "create", "notes"])
+
+    result = runner.invoke(app, ["ingest", str(notes), str(pdf), "--index", "notes"])
+
+    assert result.exit_code == 1
+    assert "notes.txt is not a PDF" in result.output
+    assert "parsed  " in result.output

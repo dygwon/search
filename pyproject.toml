@@ -7,7 +7,7 @@ dependencies = [
     "locus-core",
     "locus-ingest",
     "locus-search",
-    "typer>=0.27.3",
+    "typer>=0.19",
 ]
 
 [project.scripts]

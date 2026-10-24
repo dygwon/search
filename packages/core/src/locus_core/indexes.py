@@ -24,6 +24,12 @@ class IndexExistsError(Exception):
         self.name = name
 
 
+class IndexNotFoundError(Exception):
+    def __init__(self, name: str):
+        super().__init__(f"no index named {name!r}; create it with `locus index create {name}`")
+        self.name = name
+
+
 @dataclass(frozen=True)
 class ModelBundle:
     dense: ResolvedModel
@@ -88,6 +94,8 @@ async def create_index(
 
 def get_index(conn: sqlite3.Connection, name: str) -> Index:
     row = conn.execute(f"SELECT {INDEX_COLUMNS} FROM indexes WHERE name = ?", (name,)).fetchone()
+    if row is None:
+        raise IndexNotFoundError(name)
     return _index_from_row(row)
 
 
