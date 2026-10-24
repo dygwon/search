@@ -1,0 +1,43 @@
+[project]
+name = "locus"
+version = "0.1.0"
+description = "Local, search-first RAG for sensitive documents"
+requires-python = ">=3.12"
+dependencies = [
+    "locus-core",
+    "locus-ingest",
+    "locus-search",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+locus = "locus.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+locus-core = { workspace = true }
+locus-ingest = { workspace = true }
+locus-search = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not docker'"
+markers = ["docker: needs a running Docker daemon (run with -m docker)"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
