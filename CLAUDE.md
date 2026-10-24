@@ -1,7 +1,5 @@
 # search
 
-Experimental search application using Milvus and Go SDK.
-
 ## Agent skills
 
 ### Issue tracker
