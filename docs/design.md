@@ -41,7 +41,7 @@ SQLite in WAL mode is the system of record; Qdrant is a derived index that can b
 **Identity**
 
 - doc\_hash = SHA-256 of the file bytes.
-- chunk\_id = UUID5 of (doc\_hash, chunker config hash, char\_start, char\_end); it doubles as the Qdrant point ID.
+- chunk\_id = UUID5 of (doc\_hash, chunker config hash, char\_start, char\_end, piece); it doubles as the Qdrant point ID. Spans are item-level, and piece tells apart chunks that share a span, such as the pieces of a split table ([ADR 0002](adr/0002-item-level-chunk-spans.md)).
 - Character offsets let relevance judgments survive re-chunking and apply across indexes.
 
 **Lifecycle**

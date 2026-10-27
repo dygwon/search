@@ -1,8 +1,10 @@
 """Chunk: split a parsed document into token-bounded chunks with character offsets.
 
 Offsets point into the document text, each item as the chunker's serializer renders it
-(docs/adr/0001-chunk-offsets.md). Plain text offsets are the same in every index; list,
-table and heading offsets can shift with a Docling upgrade.
+(docs/adr/0001-chunk-offsets.md). A chunk spans the items it covers, narrowed to its text
+only inside a single text item (docs/adr/0002-item-level-chunk-spans.md). Plain text
+offsets are the same in every index; list, table and heading offsets can shift with a
+Docling upgrade.
 """
 
 import hashlib

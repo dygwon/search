@@ -17,5 +17,5 @@ The parsed document as one string: each item, in reading order, as the chunker r
 _Avoid_: Full text, raw text, markdown
 
 **Chunk**:
-A contiguous span of the document text, sized to fit the index's models, that is embedded and retrieved as one unit.
+A piece of a document, sized to fit the index's models, that is embedded and retrieved as one unit. Its span in the document text covers the items it came from; the pieces of a split table share one span.
 _Avoid_: Passage, segment, split
