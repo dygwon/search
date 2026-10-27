@@ -5,12 +5,21 @@ from pathlib import Path
 import pytest
 from locus_core.db import connect
 from locus_core.qdrant_store import QdrantStore
+from locus_ingest.pipeline import Backends
 from qdrant_client import AsyncQdrantClient
 from typer.testing import CliRunner
 
 from locus import cli
 from locus.cli import Services, app
-from tests.fakes import BGE_SMALL, FakeParser, FakeResolver, write_pdf
+from tests.fakes import (
+    BGE_SMALL,
+    FakeDenseEmbedder,
+    FakeParser,
+    FakeResolver,
+    FakeSparseEmbedder,
+    WhitespaceTokenizer,
+    write_pdf,
+)
 
 runner = CliRunner()
 
@@ -68,7 +77,13 @@ def services(monkeypatch, tmp_path):
         conn=connect(tmp_path),
         store=QdrantStore(AsyncQdrantClient(":memory:")),
         resolver=FakeResolver(BGE_SMALL),
-        parser=FakeParser(),
+        backends=lambda index: Backends(
+            parser=FakeParser(),
+            tokenizer=WhitespaceTokenizer(),
+            dense=FakeDenseEmbedder(),
+            sparse=FakeSparseEmbedder(),
+            special_tokens=0,
+        ),
     )
     monkeypatch.setattr(cli, "build_services", lambda settings: services)
     return services
@@ -111,7 +126,7 @@ def test_index_list_shows_each_index_with_its_dense_model(services):
     ]
 
 
-def test_ingest_reports_each_file_then_its_cache_hit(services, tmp_path, monkeypatch):
+def test_ingest_reports_each_file_then_that_it_is_unchanged(services, tmp_path, monkeypatch):
     monkeypatch.setenv("LOCUS_DATA_DIR", str(tmp_path / "data"))
     pdf = write_pdf(tmp_path / "sample.pdf", title="Quarterly Notes")
     runner.invoke(app, ["index", "create", "notes"])
@@ -120,8 +135,10 @@ def test_ingest_reports_each_file_then_its_cache_hit(services, tmp_path, monkeyp
     second = runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
 
     assert first.exit_code == 0, first.output
-    assert re.fullmatch(r"parsed  [0-9a-f]{12}  Quarterly Notes  \(sample.pdf\)\n", first.output)
-    assert second.output.startswith("cached  ")
+    assert re.fullmatch(
+        r"ingested   [0-9a-f]{12}  Quarterly Notes  \(1 chunk, sample.pdf\)\n", first.output
+    )
+    assert second.output.startswith("unchanged  ")
 
 
 def test_ingest_into_an_unknown_index_fails_clearly(services, tmp_path):
@@ -144,4 +161,4 @@ def test_ingest_keeps_going_past_a_bad_file_and_fails(services, tmp_path, monkey
 
     assert result.exit_code == 1
     assert "notes.txt is not a PDF" in result.output
-    assert "parsed  " in result.output
+    assert "ingested  " in result.output

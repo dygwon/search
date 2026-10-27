@@ -2,6 +2,8 @@
 
 from qdrant_client import AsyncQdrantClient, models
 
+UPSERT_BATCH = 256
+
 # Fields search filters on. In-memory Qdrant ignores these; only a server applies them.
 PAYLOAD_INDEXES = {
     "doc_hash": models.PayloadSchemaType.KEYWORD,
@@ -36,3 +38,7 @@ class QdrantStore:
                 )
             ]
         )
+
+    async def upsert(self, collection: str, points: list[models.PointStruct]) -> None:
+        for start in range(0, len(points), UPSERT_BATCH):
+            await self.client.upsert(collection, points[start : start + UPSERT_BATCH], wait=True)
