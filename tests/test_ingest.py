@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 
 import pytest
+from docling_core.types.doc import DocItemLabel, DoclingDocument
 from locus_core.db import connect
 from locus_core.indexes import create_index
 from locus_core.qdrant_store import QdrantStore
@@ -17,6 +18,7 @@ from tests.fakes import (
     FakeSparseEmbedder,
     WhitespaceTokenizer,
     docling_doc,
+    table_data,
     write_pdf,
 )
 
@@ -104,6 +106,51 @@ async def test_a_fresh_index_with_the_same_config_gets_identical_chunk_ids(
     by_index = {i: [c for idx, c in rows if idx == i] for i in (index.index_id, other.index_id)}
     assert by_index[index.index_id] == by_index[other.index_id]
     assert len(by_index[index.index_id]) == first.chunks
+
+
+def split_table_doc():
+    """A captioned table too big for one chunk, so it's split into pieces of one span."""
+    doc = DoclingDocument(name="results")
+    rows = [["model", "recall"]] + [[f"model{i}", str(i)] for i in range(60)]
+    table = doc.add_table(data=table_data(rows))
+    caption = doc.add_text(label=DocItemLabel.CAPTION, text="Table 2: Recall.", parent=table)
+    table.captions.append(caption.get_ref())
+    return doc
+
+
+async def test_the_pieces_of_a_split_table_get_distinct_chunk_ids(
+    conn, store, data_dir, index, pdf
+):
+    split = backends(parser=FakeParser(split_table_doc()))
+
+    result = await ingest_file(conn, store, split, data_dir, index, pdf)
+
+    ids = [c for (c,) in chunk_rows(conn, result.doc_hash)]
+    assert len(ids) > 1 and len(set(ids)) == len(ids)
+    assert await point_count(store, index, result.doc_hash) == len(ids)
+
+
+async def test_a_split_table_gets_identical_chunk_ids_in_a_fresh_index(
+    conn, store, data_dir, index, pdf
+):
+    other = await create_index(conn, store, FakeResolver(BGE_SMALL), "notes-copy")
+    split = backends(parser=FakeParser(split_table_doc()))
+
+    result = await ingest_file(conn, store, split, data_dir, index, pdf)
+    await ingest_file(conn, store, split, data_dir, other, pdf)
+
+    ids = {
+        index_id: [
+            c
+            for (c,) in conn.execute(
+                "SELECT chunk_id FROM chunks WHERE index_id = ? AND doc_hash = ? ORDER BY ordinal",
+                (index_id, result.doc_hash),
+            )
+        ]
+        for index_id in (index.index_id, other.index_id)
+    }
+    assert len(ids[index.index_id]) > 1
+    assert ids[index.index_id] == ids[other.index_id]
 
 
 async def test_a_different_chunk_target_gets_different_chunk_ids(conn, store, data_dir, index, pdf):

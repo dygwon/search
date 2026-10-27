@@ -10,16 +10,19 @@ import json
 import logging
 import sqlite3
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from importlib.metadata import version
 
 from docling_core.transforms.chunker import HybridChunker
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
-from docling_core.types.doc import DocItemLabel, DoclingDocument
+from docling_core.types.doc import DocItemLabel, DoclingDocument, NodeItem, TextItem
 from locus_core.indexes import Index
 
 ITEM_SEPARATOR = "\n\n"
 MERGE_PEERS = True
+# How chunk spans are worked out (docs/adr/0002-item-level-chunk-spans.md).
+OFFSETS_SCHEME = "item-level"
 # Fixed so chunk IDs are the same on every machine.
 CHUNK_NAMESPACE = uuid.UUID("6f0d1c4e-3b9a-4a57-9f53-2c1e8d7b5a10")
 
@@ -31,6 +34,8 @@ class Chunk:
     ordinal: int
     char_start: int
     char_end: int
+    # Earlier chunks of the document with the same span; >0 only for a split table's pieces.
+    piece: int
     page: int | None
     bbox: dict | None
     modality: str
@@ -78,25 +83,35 @@ def chunk_document(
     spans = item_spans(texts)
     # Where the last chunk ended inside each item, so repeated text isn't matched twice.
     cursors = dict.fromkeys(spans, 0)
+    # Chunks seen per span, so the pieces of a split table get distinct IDs.
+    pieces: Counter[tuple[int, int]] = Counter()
     chunks = []
     for ordinal, doc_chunk in enumerate(chunker.chunk(doc)):
-        refs = [item.self_ref for item in doc_chunk.meta.doc_items if item.self_ref in spans]
-        located = _locate(
-            doc_chunk.text, [texts[ref] for ref in refs], cursors[refs[0]], chunker.delim
-        )
-        if located is None:
+        refs = [_resolve(doc, item, spans) for item in doc_chunk.meta.doc_items]
+        if not refs or None in refs:
             raise UnlocatableChunkError(ordinal)
-        start, end = located
-        cursors[refs[-1]] = end
+        refs = list(dict.fromkeys(refs))
+        span = (spans[refs[0]][0], spans[refs[-1]][1])
         first = doc_chunk.meta.doc_items[0]
+        if refs == [first.self_ref] and isinstance(first, TextItem):
+            # Part of one text item, maybe a split paragraph: narrow to the chunk's text.
+            [ref] = refs
+            start = texts[ref].find(doc_chunk.text, cursors[ref])
+            if start < 0:
+                raise UnlocatableChunkError(ordinal)
+            cursors[ref] = start + len(doc_chunk.text)
+            span = (span[0] + start, span[0] + cursors[ref])
+        piece = pieces[span]
+        pieces[span] += 1
         text = chunker.contextualize(doc_chunk)
         token_count = tokenizer.count_tokens(text) + special_tokens
         prov = next((p for item in doc_chunk.meta.doc_items for p in item.prov), None)
         chunks.append(
             Chunk(
                 ordinal=ordinal,
-                char_start=spans[refs[0]][0] + start,
-                char_end=spans[refs[-1]][0] + end,
+                char_start=span[0],
+                char_end=span[1],
+                piece=piece,
                 page=prov.page_no if prov else None,
                 bbox=prov.bbox.model_dump(mode="json") if prov else None,
                 modality="table" if first.label == DocItemLabel.TABLE else "text",
@@ -107,19 +122,13 @@ def chunk_document(
     return chunks
 
 
-def _locate(text: str, pieces: list[str], cursor: int, delim: str) -> tuple[int, int] | None:
-    """Where text starts in the first item and ends in the last, relative to each item.
-
-    The chunker joins items with delim; a chunk can begin partway through its first
-    item and end partway through its last when an item was split.
-    """
-    if len(pieces) == 1:
-        start = pieces[0].find(text, cursor)
-        return None if start < 0 else (start, start + len(text))
-    first, last = pieces[0], pieces[-1]
-    start = next((k for k in range(cursor, len(first)) if text.startswith(first[k:] + delim)), None)
-    end = next((e for e in range(len(last), 0, -1) if text.endswith(delim + last[:e])), None)
-    return None if start is None or end is None else (start, end)
+def _resolve(doc: DoclingDocument, item: NodeItem, spans: dict[str, tuple[int, int]]) -> str | None:
+    """The item, or the nearest ancestor, that has a span: a caption renders inside its parent."""
+    while item.self_ref not in spans:
+        if item.parent is None:
+            return None
+        item = item.parent.resolve(doc)
+    return item.self_ref
 
 
 def config_hash(index: Index, tokenizer: BaseTokenizer) -> str:
@@ -132,12 +141,13 @@ def config_hash(index: Index, tokenizer: BaseTokenizer) -> str:
         f"{dense.repo_id}@{dense.revision}",
         tokenizer.get_max_tokens(),
         MERGE_PEERS,
+        OFFSETS_SCHEME,
     ]
     return hashlib.sha256(json.dumps(config).encode()).hexdigest()
 
 
-def chunk_id(doc_hash: str, config: str, char_start: int, char_end: int) -> str:
-    return str(uuid.uuid5(CHUNK_NAMESPACE, f"{doc_hash}:{config}:{char_start}:{char_end}"))
+def chunk_id(doc_hash: str, config: str, char_start: int, char_end: int, piece: int) -> str:
+    return str(uuid.uuid5(CHUNK_NAMESPACE, f"{doc_hash}:{config}:{char_start}:{char_end}:{piece}"))
 
 
 def write_chunks(
@@ -157,7 +167,7 @@ def write_chunks(
             logger.error("chunk %d has %d tokens and will be truncated", c.ordinal, c.token_count)
     rows = [
         (
-            chunk_id(doc_hash, config, c.char_start, c.char_end),
+            chunk_id(doc_hash, config, c.char_start, c.char_end, c.piece),
             index.index_id,
             doc_hash,
             c.ordinal,
