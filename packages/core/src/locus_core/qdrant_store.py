@@ -1,5 +1,7 @@
 """VectorStore backed by Qdrant."""
 
+from collections.abc import Mapping
+
 from qdrant_client import AsyncQdrantClient, models
 
 UPSERT_BATCH = 256
@@ -42,3 +44,17 @@ class QdrantStore:
     async def upsert(self, collection: str, points: list[models.PointStruct]) -> None:
         for start in range(0, len(points), UPSERT_BATCH):
             await self.client.upsert(collection, points[start : start + UPSERT_BATCH], wait=True)
+
+    async def query(
+        self,
+        collection: str,
+        vectors: Mapping[str, list[float] | models.SparseVector],
+        limit: int,
+    ) -> dict[str, list[models.ScoredPoint]]:
+        """One ranked list per named vector, fetched in a single round trip."""
+        requests = [
+            models.QueryRequest(query=vector, using=name, limit=limit, with_payload=True)
+            for name, vector in vectors.items()
+        ]
+        responses = await self.client.query_batch_points(collection, requests)
+        return {name: response.points for name, response in zip(vectors, responses, strict=True)}

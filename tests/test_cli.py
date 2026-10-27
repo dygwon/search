@@ -6,6 +6,7 @@ import pytest
 from locus_core.db import connect
 from locus_core.qdrant_store import QdrantStore
 from locus_ingest.pipeline import Backends
+from locus_search.search import Encoders
 from qdrant_client import AsyncQdrantClient
 from typer.testing import CliRunner
 
@@ -84,6 +85,7 @@ def services(monkeypatch, tmp_path):
             sparse=FakeSparseEmbedder(),
             special_tokens=0,
         ),
+        encoders=lambda index: Encoders(dense=FakeDenseEmbedder(), sparse=FakeSparseEmbedder()),
     )
     monkeypatch.setattr(cli, "build_services", lambda settings: services)
     return services
@@ -162,3 +164,36 @@ def test_ingest_keeps_going_past_a_bad_file_and_fails(services, tmp_path, monkey
     assert result.exit_code == 1
     assert "notes.txt is not a PDF" in result.output
     assert "ingested  " in result.output
+
+
+def test_search_prints_each_hit_with_its_scores_and_snippet(services, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_DATA_DIR", str(tmp_path / "data"))
+    pdf = write_pdf(tmp_path / "sample.pdf", title="Quarterly Notes")
+    runner.invoke(app, ["index", "create", "notes"])
+    runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
+
+    result = runner.invoke(app, ["search", "body text", "--index", "notes"])
+
+    assert result.exit_code == 0, result.output
+    assert re.fullmatch(
+        r"1\. Quarterly Notes\n"
+        r"   rrf 0\.0328  dense -?\d\.\d{3}  bm25 \d+\.\d{3}\n"
+        r"   Some body text\.\n\n",
+        result.output,
+    )
+
+
+def test_search_says_when_nothing_matches(services):
+    runner.invoke(app, ["index", "create", "notes"])
+
+    result = runner.invoke(app, ["search", "anything", "--index", "notes"])
+
+    assert result.exit_code == 0
+    assert result.output == "No results.\n"
+
+
+def test_search_on_an_unknown_index_fails_clearly(services):
+    result = runner.invoke(app, ["search", "anything", "--index", "nope"])
+
+    assert result.exit_code == 1
+    assert "no index named 'nope'" in result.output
