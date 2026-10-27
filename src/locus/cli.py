@@ -23,6 +23,7 @@ from locus_core.models import ModelResolver
 from locus_core.qdrant_store import QdrantStore
 from locus_core.settings import Settings
 from locus_ingest.pipeline import Backends, ingest_file
+from locus_search.search import CANDIDATES, DEFAULT_LIMIT, Encoders, Hit, search
 
 app = typer.Typer(no_args_is_help=True, help="Local, search-first RAG for sensitive documents.")
 index_app = typer.Typer(no_args_is_help=True, help="Create and inspect indexes.")
@@ -38,6 +39,7 @@ class Services:
     resolver: ModelResolver
     # The tokenizer and embedders follow the index's pinned bundle.
     backends: Callable[[Index], Backends]
+    encoders: Callable[[Index], Encoders]
 
 
 def build_services(settings: Settings) -> Services:
@@ -45,7 +47,7 @@ def build_services(settings: Settings) -> Services:
     from locus_core.models import HfModelResolver
     from qdrant_client import AsyncQdrantClient
 
-    from locus.backends import real_backends
+    from locus.backends import real_backends, real_encoders
 
     client = AsyncQdrantClient(
         url=settings.qdrant_url, api_key=settings.qdrant_api_key, prefer_grpc=True
@@ -55,6 +57,7 @@ def build_services(settings: Settings) -> Services:
         store=QdrantStore(client),
         resolver=HfModelResolver(),
         backends=real_backends,
+        encoders=real_encoders,
     )
 
 
@@ -143,6 +146,47 @@ def ingest(
 
     if asyncio.run(ingest_all()):
         raise typer.Exit(1)
+
+
+@app.command("search")
+def search_command(
+    query: str,
+    index: Annotated[str, typer.Option(help="Index to search.")],
+    limit: Annotated[int, typer.Option(min=1, help="Documents to show.")] = DEFAULT_LIMIT,
+    candidates: Annotated[
+        int, typer.Option(min=1, help="Candidates retrieved per list before fusion.")
+    ] = CANDIDATES,
+) -> None:
+    """Search an index: dense and BM25 retrieval fused with RRF, best chunk per document."""
+    services = build_services(Settings())
+    try:
+        target = get_index(services.conn, index)
+    except IndexNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    hits = asyncio.run(
+        search(services.store, services.encoders(target), target, query, limit, candidates)
+    )
+    if not hits:
+        typer.echo("No results.")
+    for rank, hit in enumerate(hits, 1):
+        typer.echo(_format_hit(rank, hit))
+
+
+SNIPPET_CHARS = 240
+
+
+def _format_hit(rank: int, hit: Hit) -> str:
+    page = f"  p. {hit.page}" if hit.page is not None else ""
+    scores = "  ".join(f"{name} {_score(hit.scores.get(name))}" for name in ("dense", "bm25"))
+    text = " ".join(hit.text.split())
+    snippet = text if len(text) <= SNIPPET_CHARS else text[: SNIPPET_CHARS - 1].rstrip() + "…"
+    return f"{rank}. {hit.title}{page}\n   rrf {hit.score:.4f}  {scores}\n   {snippet}\n"
+
+
+def _score(value: float | None) -> str:
+    # A list that didn't return the chunk has no score for it.
+    return "-" if value is None else f"{value:.3f}"
 
 
 @app.callback()
