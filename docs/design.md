@@ -46,10 +46,11 @@ SQLite in WAL mode is the system of record; Qdrant is a derived index that can b
 
 **Lifecycle**
 
-- Re-adding a path with a new hash replaces the old version. The new version is ingested and upserted first, then the old chunks and points are deleted, so search never sees the document missing.
-- Deleting a document removes its index\_members row, its chunks, and its Qdrant points (filtered on doc\_hash) in one job.
-- A doc\_hash is purged from an index only once no index\_members row there references it, since the same bytes can sit at several paths. Purging clears its job rows first, so an ingest of those bytes after a killed purge redoes every stage instead of skipping them as done. Then it deletes the Qdrant points and saved vectors, and last, in one transaction, the chunks and (for `locus rm`) the index\_members row. While those rows remain, rerunning finishes the job.
-- After every ingest, any doc\_hash in the index with chunks but no member is purged. That finishes a replace that was killed between the upsert and the delete.
+- Re-adding a path with a new hash replaces the old version. Register points the path's index\_members row at the new doc\_hash and keeps the last searchable one in `replaces`. The old version is purged only once the new one is indexed, so search never sees the document missing, even if the new version fails partway.
+- A version the path pointed at that never finished indexing is purged when the path is next ingested. If the file goes back to its searchable bytes, `replaces` is cleared and nothing is re-embedded.
+- If purging the replaced version fails, the ingest still succeeds and the purge is retried the next time that path is ingested.
+- Deleting a document removes its chunks and Qdrant points (filtered on doc\_hash), including any version it was replacing, then its index\_members row, in one job. A path whose bytes another path still holds just loses its row and records no job.
+- A doc\_hash is purged from an index only once no other index\_members row there holds it, as its doc\_hash or its `replaces`. Purging clears its job rows first, so an ingest of those bytes after a killed purge redoes every stage instead of skipping them as done. Then it deletes the Qdrant points and saved vectors, then the chunks. The index\_members row goes last, so rerunning a killed `locus rm` finishes the job.
 - Judgments that reference a replaced doc\_hash are flagged as stale.
 - The ingest worker is the only heavy writer. The API writes only query logs and status updates, with a busy timeout.
 
