@@ -46,8 +46,11 @@ SQLite in WAL mode is the system of record; Qdrant is a derived index that can b
 
 **Lifecycle**
 
-- Re-adding a path with a new hash replaces the old version. The new version is ingested and upserted first, then the old chunks and points are deleted, so search never sees the document missing.
-- Deleting a document removes its index\_members row, its chunks, and its Qdrant points (filtered on doc\_hash) in one job.
+- Re-adding a path with a new hash replaces the old document. Register points the path's index\_members row at the new doc\_hash and keeps the last searchable one in `replaces`. The old document is purged only once the new one is indexed, so search never loses the file, even if the new document fails partway.
+- A document the path pointed at that never finished indexing is purged when the path is next ingested. If the file goes back to its searchable bytes, `replaces` is cleared and nothing is re-embedded.
+- If purging the replaced document fails, the ingest still succeeds and the purge is retried the next time that path is ingested.
+- Deleting a document removes its chunks and Qdrant points (filtered on doc\_hash), including any document it was replacing, then its index\_members row, in one job. A path whose bytes another path still holds just loses its row and records no job.
+- A doc\_hash is purged from an index only once no other index\_members row there holds it, as its doc\_hash or its `replaces`. Purging clears its job rows first, so an ingest of those bytes after a killed purge redoes every stage instead of skipping them as done. Then it deletes the Qdrant points and saved vectors, then the chunks. The index\_members row goes last, so rerunning a killed `locus rm` finishes the job.
 - Judgments that reference a replaced doc\_hash are flagged as stale.
 - The ingest worker is the only heavy writer. The API writes only query logs and status updates, with a busy timeout.
 
@@ -156,7 +159,7 @@ locus/
   apps/tui          Textual client of the API
 ```
 
-- **CLI:** `locus index create`, `locus ingest <files> --index <name>`, `locus serve`, and `locus up` to run everything end to end.
+- **CLI:** `locus index create`, `locus ingest <files> --index <name>`, `locus rm <files> --index <name>`, `locus serve`, and `locus up` to run everything end to end.
 - **Protocols in core:** `Embedder`, `Reranker`, `Fuser`, `VectorStore`, `Generator`, `RunLogger`.
 - **Libraries:** async `qdrant-client` over gRPC, `httpx`, Docling, PyLate, FastEmbed, pydantic. No LangChain or LlamaIndex.
 - **Spin-up:** Qdrant runs in Docker since it needs no GPU. The API, worker, and model servers run natively. `locus up` starts Qdrant, the API, and the worker; the app launches model servers itself. process-compose or a Procfile is the default runner.

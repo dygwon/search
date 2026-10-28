@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS index_members (
     doc_hash    TEXT NOT NULL REFERENCES documents (doc_hash),
     status      TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
+    -- The last searchable document while doc_hash is being ingested to replace it.
+    replaces    TEXT,
     PRIMARY KEY (index_id, source_path)
 );
 
@@ -61,6 +63,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     token_counts TEXT NOT NULL,
     PRIMARY KEY (index_id, chunk_id)
 );
+
+CREATE INDEX IF NOT EXISTS chunks_by_doc ON chunks (index_id, doc_hash);
 
 CREATE TABLE IF NOT EXISTS jobs (
     job_id     TEXT PRIMARY KEY,
@@ -101,4 +105,13 @@ def connect(data_dir: Path) -> sqlite3.Connection:
     # WAL lets the API read while the ingest worker writes.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring a data dir made by an older Locus up to SCHEMA, which only creates missing tables."""
+    members = {row[1] for row in conn.execute("PRAGMA table_info(index_members)")}
+    if "replaces" not in members:
+        with conn:
+            conn.execute("ALTER TABLE index_members ADD COLUMN replaces TEXT")

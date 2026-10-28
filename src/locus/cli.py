@@ -2,7 +2,7 @@ import asyncio
 import os
 import sqlite3
 import subprocess
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -23,6 +23,7 @@ from locus_core.models import ModelResolver
 from locus_core.qdrant_store import QdrantStore
 from locus_core.settings import Settings
 from locus_ingest.pipeline import Backends, ingest_file
+from locus_ingest.remove import remove_file
 from locus_search.search import CANDIDATES, DEFAULT_LIMIT, Encoders, Hit, search
 
 app = typer.Typer(no_args_is_help=True, help="Local, search-first RAG for sensitive documents.")
@@ -117,34 +118,64 @@ def ingest(
     """Chunk, embed and index PDFs. Files are read in place, never copied."""
     settings = Settings()
     services = build_services(settings)
+    target = _index_or_exit(services.conn, index)
+    backends = services.backends(target)
+
+    async def ingest_one(path: Path) -> str:
+        result = await ingest_file(
+            services.conn, services.store, backends, settings.data_dir, target, path
+        )
+        chunks = f"{result.chunks} chunk{'s' if result.chunks != 1 else ''}"
+        return (
+            f"{result.status:<9}  {result.doc_hash[:12]}  {result.title}  ({chunks}, {path.name})"
+        )
+
+    _each_file(paths, ingest_one)
+
+
+@app.command()
+def rm(
+    paths: Annotated[list[Path], typer.Argument(help="Files to remove; they may be gone already.")],
+    index: Annotated[str, typer.Option(help="Index to remove the files from.")],
+) -> None:
+    """Remove files from an index: their chunks and points. The files themselves are untouched."""
+    settings = Settings()
+    services = build_services(settings)
+    target = _index_or_exit(services.conn, index)
+
+    async def remove_one(path: Path) -> str:
+        doc_hash = await remove_file(services.conn, services.store, settings.data_dir, target, path)
+        return f"removed  {doc_hash[:12]}  {path.name}"
+
+    _each_file(paths, remove_one)
+
+
+def _index_or_exit(conn: sqlite3.Connection, name: str) -> Index:
     try:
-        target = get_index(services.conn, index)
+        return get_index(conn, name)
     except IndexNotFoundError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
-    backends = services.backends(target)
+
+
+def _each_file(paths: list[Path], fn: Callable[[Path], Awaitable[str]]) -> None:
+    """Run fn on each file, printing the line it returns; exit 1 if any file failed."""
 
     # One event loop for the whole batch: the gRPC client is bound to the loop it starts on.
-    async def ingest_all() -> bool:
+    async def run_all() -> bool:
         failed = False
         for path in paths:
             try:
-                result = await ingest_file(
-                    services.conn, services.store, backends, settings.data_dir, target, path
-                )
+                line = await fn(path)
             # One bad file shouldn't stop the batch; its jobs row keeps the error.
             except Exception as exc:
                 typer.echo(f"Error: {path}: {exc}", err=True)
                 failed = True
                 continue
-            chunks = f"{result.chunks} chunk{'s' if result.chunks != 1 else ''}"
-            typer.echo(
-                f"{result.status:<9}  {result.doc_hash[:12]}  {result.title}"
-                f"  ({chunks}, {path.name})"
-            )
+            typer.echo(line)
         return failed
 
-    if asyncio.run(ingest_all()):
+    if asyncio.run(run_all()):
         raise typer.Exit(1)
 
 
@@ -159,11 +190,7 @@ def search_command(
 ) -> None:
     """Search an index: dense and BM25 retrieval fused with RRF, best chunk per document."""
     services = build_services(Settings())
-    try:
-        target = get_index(services.conn, index)
-    except IndexNotFoundError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1) from exc
+    target = _index_or_exit(services.conn, index)
     hits = asyncio.run(
         search(services.store, services.encoders(target), target, query, limit, candidates)
     )
