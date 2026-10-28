@@ -210,3 +210,17 @@ async def test_rerunning_a_killed_rm_finishes_the_cleanup(conn, store, data_dir,
     assert conn.execute("SELECT count(*) FROM index_members").fetchone() == (0,)
     assert job_rows(conn, ingested.doc_hash) == [("delete", "done")]
     assert not vectors_path(data_dir, index, ingested.doc_hash).exists()
+
+
+async def test_ingesting_after_a_killed_rm_indexes_the_document_again(
+    conn, store, data_dir, index, pdf
+):
+    await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    with pytest.raises(KeyboardInterrupt):
+        await remove_file(conn, DiesAfterDelete(store.client), data_dir, index, pdf)
+
+    again = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+
+    assert again.status == "ingested"
+    assert again.chunks > 0
+    assert await point_count(store, index, again.doc_hash) == again.chunks

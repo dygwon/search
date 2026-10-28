@@ -73,20 +73,23 @@ async def purge(
         "SELECT 1 FROM index_members WHERE index_id = ? AND doc_hash = ? AND source_path IS NOT ?",
         (index.index_id, doc_hash, removing_path),
     ).fetchone()
-    # SQLite goes last: while its rows remain, a rerun can still find this version.
     if not shared:
+        # Jobs go first: once points or vectors are gone, a "done" stage would make an ingest
+        # of these bytes skip work and leave them unsearchable. A killed run that stops here
+        # is still finished by rerunning rm, which looks only at index_members.
+        with conn:
+            conn.execute(
+                "DELETE FROM jobs WHERE index_id = ? AND doc_hash = ? AND stage != ?",
+                (index.index_id, doc_hash, DELETE_STAGE),
+            )
         await store.delete_doc(index.collection, doc_hash)
         vectors_path(data_dir, index, doc_hash).unlink(missing_ok=True)
+    # The rest of SQLite goes last: while its rows remain, a rerun can still find this version.
     with conn:
         if not shared:
             conn.execute(
                 "DELETE FROM chunks WHERE index_id = ? AND doc_hash = ?",
                 (index.index_id, doc_hash),
-            )
-            # Stale "done" stages would skip the upsert if these bytes are added again.
-            conn.execute(
-                "DELETE FROM jobs WHERE index_id = ? AND doc_hash = ? AND stage != ?",
-                (index.index_id, doc_hash, DELETE_STAGE),
             )
         conn.execute(
             "DELETE FROM index_members WHERE index_id = ? AND source_path = ?",
