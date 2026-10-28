@@ -23,6 +23,7 @@ from locus_core.models import ModelResolver
 from locus_core.qdrant_store import QdrantStore
 from locus_core.settings import Settings
 from locus_ingest.pipeline import Backends, ingest_file
+from locus_ingest.remove import NotInIndexError, remove_file
 from locus_search.search import CANDIDATES, DEFAULT_LIMIT, Encoders, Hit, search
 
 app = typer.Typer(no_args_is_help=True, help="Local, search-first RAG for sensitive documents.")
@@ -145,6 +146,38 @@ def ingest(
         return failed
 
     if asyncio.run(ingest_all()):
+        raise typer.Exit(1)
+
+
+@app.command()
+def rm(
+    paths: Annotated[list[Path], typer.Argument(help="Files to remove; they may be gone already.")],
+    index: Annotated[str, typer.Option(help="Index to remove the files from.")],
+) -> None:
+    """Remove files from an index: their chunks and points. The files themselves are untouched."""
+    settings = Settings()
+    services = build_services(settings)
+    try:
+        target = get_index(services.conn, index)
+    except IndexNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    async def remove_all() -> bool:
+        failed = False
+        for path in paths:
+            try:
+                doc_hash = await remove_file(
+                    services.conn, services.store, settings.data_dir, target, path
+                )
+            except NotInIndexError as exc:
+                typer.echo(f"Error: {exc}", err=True)
+                failed = True
+                continue
+            typer.echo(f"removed  {doc_hash[:12]}  {path.name}")
+        return failed
+
+    if asyncio.run(remove_all()):
         raise typer.Exit(1)
 
 

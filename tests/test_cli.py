@@ -197,3 +197,41 @@ def test_search_on_an_unknown_index_fails_clearly(services):
 
     assert result.exit_code == 1
     assert "no index named 'nope'" in result.output
+
+
+def test_rm_removes_a_file_then_fails_clearly_once_it_is_gone(services, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_DATA_DIR", str(tmp_path / "data"))
+    pdf = write_pdf(tmp_path / "sample.pdf", title="Quarterly Notes")
+    runner.invoke(app, ["index", "create", "notes"])
+    runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
+    pdf.unlink()
+
+    first = runner.invoke(app, ["rm", str(pdf), "--index", "notes"])
+    second = runner.invoke(app, ["rm", str(pdf), "--index", "notes"])
+    search = runner.invoke(app, ["search", "body text", "--index", "notes"])
+
+    assert first.exit_code == 0, first.output
+    assert re.fullmatch(r"removed  [0-9a-f]{12}  sample.pdf\n", first.output)
+    assert second.exit_code == 1
+    assert "sample.pdf is not in index 'notes'" in second.output
+    assert search.output == "No results.\n"
+
+
+def test_rm_from_an_unknown_index_fails_clearly(services, tmp_path):
+    result = runner.invoke(app, ["rm", str(tmp_path / "sample.pdf"), "--index", "nope"])
+
+    assert result.exit_code == 1
+    assert "no index named 'nope'" in result.output
+
+
+def test_ingest_reports_a_replaced_file(services, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_DATA_DIR", str(tmp_path / "data"))
+    pdf = write_pdf(tmp_path / "sample.pdf", text="First draft")
+    runner.invoke(app, ["index", "create", "notes"])
+    runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
+    write_pdf(pdf, text="Second draft")
+
+    result = runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith("replaced   ")
