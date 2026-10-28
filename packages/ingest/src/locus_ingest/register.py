@@ -28,8 +28,13 @@ def hash_file(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def register(conn: sqlite3.Connection, index: Index, path: Path, doc_hash: str) -> None:
-    """Upsert the documents and index_members rows; the title is resolved after parsing."""
+def register(
+    conn: sqlite3.Connection, index: Index, path: Path, doc_hash: str, replaces: str | None
+) -> None:
+    """Upsert the documents and index_members rows; the title is resolved after parsing.
+
+    `replaces` is the path's last searchable version, kept until doc_hash is indexed.
+    """
     now = datetime.now(UTC).isoformat()
     with conn:
         # The same bytes at another path are the same document; the first path is kept.
@@ -39,10 +44,16 @@ def register(conn: sqlite3.Connection, index: Index, path: Path, doc_hash: str) 
             (doc_hash, str(path), PDF_MIME, path.stat().st_size, now),
         )
         conn.execute(
-            "INSERT INTO index_members (index_id, source_path, doc_hash, status, updated_at)"
-            " VALUES (?, ?, ?, 'registered', ?)"
+            "INSERT INTO index_members"
+            " (index_id, source_path, doc_hash, status, updated_at, replaces)"
+            " VALUES (?, ?, ?, 'registered', ?, ?)"
             " ON CONFLICT (index_id, source_path) DO UPDATE"
             " SET doc_hash = excluded.doc_hash, status = excluded.status,"
-            " updated_at = excluded.updated_at",
-            (index.index_id, str(path), doc_hash, now),
+            " updated_at = excluded.updated_at, replaces = excluded.replaces",
+            (index.index_id, str(path), doc_hash, now, replaces),
+        )
+        # These bytes are in the index again, so an earlier rm no longer describes them.
+        conn.execute(
+            "DELETE FROM jobs WHERE index_id = ? AND doc_hash = ? AND stage = 'delete'",
+            (index.index_id, doc_hash),
         )

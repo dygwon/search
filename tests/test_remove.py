@@ -122,7 +122,7 @@ async def test_a_kill_before_the_old_version_is_deleted_is_cleaned_up_on_rerun(
 
     rerun = await ingest_file(conn, killed, backends(), data_dir, index, pdf)
 
-    assert rerun.status == "unchanged"
+    assert rerun.status == "replaced"
     assert await point_count(store, index, old.doc_hash) == 0
     assert chunk_rows(conn, old.doc_hash) == []
 
@@ -224,3 +224,128 @@ async def test_ingesting_after_a_killed_rm_indexes_the_document_again(
     assert again.status == "ingested"
     assert again.chunks > 0
     assert await point_count(store, index, again.doc_hash) == again.chunks
+
+
+def failing_backends():
+    return backends(dense=FakeDenseEmbedder(fail_with=RuntimeError("embedder down")))
+
+
+def member(conn, path):
+    return conn.execute(
+        "SELECT doc_hash, status, replaces FROM index_members WHERE source_path = ?", (str(path),)
+    ).fetchone()
+
+
+async def test_a_failed_replace_keeps_the_old_version_through_other_ingests(
+    conn, store, data_dir, index, pdf, tmp_path
+):
+    old = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    write_pdf(pdf, text="Second draft")
+    with pytest.raises(RuntimeError):
+        await ingest_file(conn, store, failing_backends(), data_dir, index, pdf)
+
+    other = write_pdf(tmp_path / "other.pdf", text="Unrelated")
+    await ingest_file(conn, store, backends(), data_dir, index, other)
+
+    assert await point_count(store, index, old.doc_hash) == old.chunks
+    assert member(conn, pdf)[2] == old.doc_hash
+
+    new = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+
+    assert new.status == "replaced"
+    assert await point_count(store, index, old.doc_hash) == 0
+    assert chunk_rows(conn, old.doc_hash) == []
+    assert member(conn, pdf) == (new.doc_hash, "indexed", None)
+
+
+async def test_editing_again_after_a_failed_replace_purges_both_older_versions(
+    conn, store, data_dir, index, pdf
+):
+    first = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    write_pdf(pdf, text="Second draft")
+    with pytest.raises(RuntimeError):
+        await ingest_file(conn, store, failing_backends(), data_dir, index, pdf)
+    [failed_hash, _, _] = member(conn, pdf)
+    write_pdf(pdf, text="Third draft")
+
+    third = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+
+    for gone in (first.doc_hash, failed_hash):
+        assert chunk_rows(conn, gone) == []
+        assert await point_count(store, index, gone) == 0
+    assert await point_count(store, index, third.doc_hash) == third.chunks
+
+
+async def test_reverting_a_failed_edit_keeps_the_original(conn, store, data_dir, index, pdf):
+    original_bytes = pdf.read_bytes()
+    first = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    write_pdf(pdf, text="Second draft")
+    with pytest.raises(RuntimeError):
+        await ingest_file(conn, store, failing_backends(), data_dir, index, pdf)
+    [failed_hash, _, _] = member(conn, pdf)
+    pdf.write_bytes(original_bytes)
+
+    again = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+
+    assert again.doc_hash == first.doc_hash
+    assert await point_count(store, index, first.doc_hash) == first.chunks
+    assert chunk_rows(conn, failed_hash) == []
+    assert member(conn, pdf) == (first.doc_hash, "indexed", None)
+
+
+async def test_rm_after_a_failed_replace_removes_both_versions(conn, store, data_dir, index, pdf):
+    old = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    write_pdf(pdf, text="Second draft")
+    with pytest.raises(RuntimeError):
+        await ingest_file(conn, store, failing_backends(), data_dir, index, pdf)
+
+    await remove_file(conn, store, data_dir, index, pdf)
+
+    assert (await store.client.count(index.collection)).count == 0
+    assert conn.execute("SELECT count(*) FROM chunks").fetchone() == (0,)
+    assert await point_count(store, index, old.doc_hash) == 0
+
+
+class FailingDelete(QdrantStore):
+    async def delete_doc(self, collection, doc_hash):
+        raise RuntimeError("qdrant timed out")
+
+
+async def test_a_failed_cleanup_does_not_fail_the_ingest_and_is_retried(
+    conn, store, data_dir, index, pdf
+):
+    old = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    write_pdf(pdf, text="Second draft")
+
+    new = await ingest_file(conn, FailingDelete(store.client), backends(), data_dir, index, pdf)
+
+    assert new.status == "replaced"
+    assert await point_count(store, index, new.doc_hash) == new.chunks
+    assert member(conn, pdf) == (new.doc_hash, "indexed", old.doc_hash)
+
+    await ingest_file(conn, store, backends(), data_dir, index, pdf)
+
+    assert await point_count(store, index, old.doc_hash) == 0
+    assert member(conn, pdf)[2] is None
+
+
+async def test_rm_of_one_of_two_paths_records_no_delete_job(
+    conn, store, data_dir, index, pdf, tmp_path
+):
+    copy = tmp_path / "copy.pdf"
+    copy.write_bytes(pdf.read_bytes())
+    ingested = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    await ingest_file(conn, store, backends(), data_dir, index, copy)
+
+    await remove_file(conn, store, data_dir, index, pdf)
+
+    assert ("delete", "done") not in job_rows(conn, ingested.doc_hash)
+
+
+async def test_a_readded_file_has_no_delete_job(conn, store, data_dir, index, pdf):
+    await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    await remove_file(conn, store, data_dir, index, pdf)
+
+    again = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+
+    assert ("delete", "done") not in job_rows(conn, again.doc_hash)

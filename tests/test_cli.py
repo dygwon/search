@@ -213,7 +213,7 @@ def test_rm_removes_a_file_then_fails_clearly_once_it_is_gone(services, tmp_path
     assert first.exit_code == 0, first.output
     assert re.fullmatch(r"removed  [0-9a-f]{12}  sample.pdf\n", first.output)
     assert second.exit_code == 1
-    assert "sample.pdf is not in index 'notes'" in second.output
+    assert "sample.pdf: not in index 'notes'" in second.output
     assert search.output == "No results.\n"
 
 
@@ -235,3 +235,23 @@ def test_ingest_reports_a_replaced_file(services, tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert result.output.startswith("replaced   ")
+
+
+class FailingDelete(QdrantStore):
+    async def delete_doc(self, collection, doc_hash):
+        raise RuntimeError("qdrant is unreachable")
+
+
+def test_rm_keeps_going_past_a_failure_and_fails(services, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_DATA_DIR", str(tmp_path / "data"))
+    pdf = write_pdf(tmp_path / "sample.pdf")
+    runner.invoke(app, ["index", "create", "notes"])
+    runner.invoke(app, ["ingest", str(pdf), "--index", "notes"])
+    services.store = FailingDelete(services.store.client)
+
+    result = runner.invoke(app, ["rm", str(pdf), str(tmp_path / "missing.pdf"), "--index", "notes"])
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Error: " in result.output and "qdrant is unreachable" in result.output
+    assert "missing.pdf: not in index 'notes'" in result.output

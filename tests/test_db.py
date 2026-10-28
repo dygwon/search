@@ -1,4 +1,6 @@
-from locus_core.db import connect
+import sqlite3
+
+from locus_core.db import DB_FILENAME, connect
 
 
 def table_names(conn):
@@ -39,3 +41,31 @@ def test_reopening_keeps_existing_rows(tmp_path):
     reopened = connect(tmp_path)
 
     assert reopened.execute("SELECT source_path FROM documents").fetchall() == [("/docs/a.pdf",)]
+
+
+def test_an_older_data_dir_gets_the_replaces_column(tmp_path):
+    old = sqlite3.connect(tmp_path / DB_FILENAME)
+    old.execute(
+        "CREATE TABLE index_members (index_id TEXT NOT NULL, source_path TEXT NOT NULL,"
+        " doc_hash TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL,"
+        " PRIMARY KEY (index_id, source_path))"
+    )
+    old.execute("INSERT INTO index_members VALUES ('i', '/a.pdf', 'abc', 'indexed', 't')")
+    old.commit()
+    old.close()
+
+    conn = connect(tmp_path)
+
+    assert conn.execute("SELECT doc_hash, replaces FROM index_members").fetchall() == [
+        ("abc", None)
+    ]
+
+
+def test_chunks_are_indexed_by_document(tmp_path):
+    conn = connect(tmp_path)
+
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT 1 FROM chunks WHERE index_id = 'i' AND doc_hash = 'd'"
+    ).fetchall()
+
+    assert any("chunks_by_doc" in row[-1] for row in plan)
