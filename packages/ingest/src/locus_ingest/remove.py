@@ -1,4 +1,4 @@
-"""Remove a document version from an index: its Qdrant points, chunks, jobs and vectors."""
+"""Remove a document from an index: its Qdrant points, chunks, jobs and vectors."""
 
 import sqlite3
 from pathlib import Path
@@ -23,7 +23,7 @@ async def remove_file(
 ) -> str:
     """Take a path out of the index; returns the doc_hash it pointed at.
 
-    Its versions are purged before its index_members row goes, so rerunning a killed rm
+    Its documents are purged before its index_members row goes, so rerunning a killed rm
     finds the row and finishes the job.
     """
     # The file may already be gone from disk; only its recorded path matters.
@@ -37,7 +37,7 @@ async def remove_file(
     doc_hash, replaces = row
 
     async def delete() -> None:
-        # A replace that never finished leaves its last searchable version here too.
+        # A replace that never finished leaves its last searchable document here too.
         for version in (doc_hash, replaces):
             if version is not None:
                 await purge(conn, store, data_dir, index, version, path)
@@ -63,7 +63,7 @@ async def purge(
     doc_hash: str,
     path: Path,
 ) -> None:
-    """Delete one version from the index as `path` lets go of it, unless another path uses it.
+    """Delete one document from the index as `path` lets go of it, unless another path uses it.
 
     The caller drops its own reference afterwards. Each step is safe to repeat, so a rerun
     finishes a purge that was killed.
@@ -86,7 +86,7 @@ async def purge(
 
 
 def used_elsewhere(conn: sqlite3.Connection, index: Index, doc_hash: str, path: Path) -> bool:
-    """Whether a member other than `path` holds this version, as its current or replaced one."""
+    """Whether a member other than `path` holds this document, as its current or replaced one."""
     return (
         conn.execute(
             "SELECT 1 FROM index_members WHERE index_id = ? AND source_path != ?"

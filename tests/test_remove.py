@@ -53,7 +53,7 @@ def job_rows(conn, doc_hash):
     ).fetchall()
 
 
-async def test_reingesting_an_edited_file_replaces_the_old_version(
+async def test_reingesting_an_edited_file_replaces_the_old_document(
     conn, store, data_dir, index, pdf
 ):
     old = await ingest_file(conn, store, backends(), data_dir, index, pdf)
@@ -71,7 +71,7 @@ async def test_reingesting_an_edited_file_replaces_the_old_version(
 
 
 class SearchingStore(QdrantStore):
-    """Searches just before the old version's points are deleted."""
+    """Searches just before the old document's points are deleted."""
 
     def __init__(self, client, index):
         super().__init__(client)
@@ -111,7 +111,7 @@ class KilledOnDelete(QdrantStore):
         await super().delete_doc(collection, doc_hash)
 
 
-async def test_a_kill_before_the_old_version_is_deleted_is_cleaned_up_on_rerun(
+async def test_a_kill_before_the_old_document_is_deleted_is_cleaned_up_on_rerun(
     conn, store, data_dir, index, pdf
 ):
     old = await ingest_file(conn, store, backends(), data_dir, index, pdf)
@@ -236,7 +236,7 @@ def member(conn, path):
     ).fetchone()
 
 
-async def test_a_failed_replace_keeps_the_old_version_through_other_ingests(
+async def test_a_failed_replace_keeps_the_old_document_through_other_ingests(
     conn, store, data_dir, index, pdf, tmp_path
 ):
     old = await ingest_file(conn, store, backends(), data_dir, index, pdf)
@@ -258,7 +258,7 @@ async def test_a_failed_replace_keeps_the_old_version_through_other_ingests(
     assert member(conn, pdf) == (new.doc_hash, "indexed", None)
 
 
-async def test_editing_again_after_a_failed_replace_purges_both_older_versions(
+async def test_editing_again_after_a_failed_replace_purges_both_older_documents(
     conn, store, data_dir, index, pdf
 ):
     first = await ingest_file(conn, store, backends(), data_dir, index, pdf)
@@ -293,7 +293,7 @@ async def test_reverting_a_failed_edit_keeps_the_original(conn, store, data_dir,
     assert member(conn, pdf) == (first.doc_hash, "indexed", None)
 
 
-async def test_rm_after_a_failed_replace_removes_both_versions(conn, store, data_dir, index, pdf):
+async def test_rm_after_a_failed_replace_removes_both_documents(conn, store, data_dir, index, pdf):
     old = await ingest_file(conn, store, backends(), data_dir, index, pdf)
     write_pdf(pdf, text="Second draft")
     with pytest.raises(RuntimeError):

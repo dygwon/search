@@ -33,7 +33,7 @@ def register(
 ) -> None:
     """Upsert the documents and index_members rows; the title is resolved after parsing.
 
-    `replaces` is the path's last searchable version, kept until doc_hash is indexed.
+    `replaces` is the path's last searchable document, kept until doc_hash is indexed.
     """
     now = datetime.now(UTC).isoformat()
     with conn:

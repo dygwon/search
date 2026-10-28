@@ -39,7 +39,7 @@ class Ingested:
     path: Path
     doc_hash: str
     title: str
-    # "replaced" when this ingest made the path's new bytes the searchable version,
+    # "replaced" when this ingest made the path's new document the searchable one,
     # "ingested" when any stage after register ran, "unchanged" when all were already done.
     status: str
     chunks: int
@@ -67,7 +67,7 @@ async def ingest_file(
         return stage_done(conn, index.index_id, doc_hash, name)
 
     replaces, abandoned = _versions(conn, index, path, doc_hash)
-    # Versions that were never searchable go now; the path still points at them, so a
+    # Documents that were never searchable go now; the path still points at them, so a
     # killed run finds them again.
     for version in abandoned:
         await purge(conn, store, data_dir, index, version, path)
@@ -130,7 +130,7 @@ async def ingest_file(
 def _versions(
     conn: sqlite3.Connection, index: Index, path: Path, doc_hash: str
 ) -> tuple[str | None, list[str]]:
-    """The version doc_hash replaces at this path, and the versions it leaves behind."""
+    """The document doc_hash replaces at this path, and the documents it leaves behind."""
     row = conn.execute(
         "SELECT doc_hash, status, replaces FROM index_members"
         " WHERE index_id = ? AND source_path = ?",
@@ -141,8 +141,8 @@ def _versions(
     current, status, replaces = row
     if current == doc_hash:
         return replaces, []
-    # A current version that finished indexing is the searchable one; one that didn't
-    # never was, so the version it was replacing still is.
+    # A current document that finished indexing is the searchable one; one that didn't
+    # never was, so the document it was replacing still is.
     if status == "indexed":
         abandoned, replaces = replaces, current
     else:
@@ -161,11 +161,11 @@ async def _finish_replace(
     path: Path,
     replaces: str,
 ) -> None:
-    """Purge the old version now the new one is searchable. A failure is retried next ingest."""
+    """Purge the old document now the new one is searchable. A failure is retried next ingest."""
     try:
         await purge(conn, store, data_dir, index, replaces, path)
     except Exception:
-        logger.exception("could not purge %s's old version %s; will retry", path, replaces[:12])
+        logger.exception("could not purge %s's old document %s; will retry", path, replaces[:12])
         return
     with conn:
         conn.execute(

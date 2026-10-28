@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS index_members (
     doc_hash    TEXT NOT NULL REFERENCES documents (doc_hash),
     status      TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
-    -- The last searchable version while doc_hash is being ingested to replace it.
+    -- The last searchable document while doc_hash is being ingested to replace it.
     replaces    TEXT,
     PRIMARY KEY (index_id, source_path)
 );
