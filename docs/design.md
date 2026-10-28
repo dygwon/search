@@ -48,7 +48,7 @@ SQLite in WAL mode is the system of record; Qdrant is a derived index that can b
 
 - Re-adding a path with a new hash replaces the old version. The new version is ingested and upserted first, then the old chunks and points are deleted, so search never sees the document missing.
 - Deleting a document removes its index\_members row, its chunks, and its Qdrant points (filtered on doc\_hash) in one job.
-- A doc\_hash is purged from an index only once no index\_members row there references it, since the same bytes can sit at several paths. Purging deletes its Qdrant points first, then its chunks and job rows, then its saved vectors, so a rerun can always finish the job, and adding the same bytes again starts fresh.
+- A doc\_hash is purged from an index only once no index\_members row there references it, since the same bytes can sit at several paths. Purging deletes its Qdrant points and saved vectors first, then its chunks, job rows and (for `locus rm`) the index\_members row in one transaction. A killed run leaves those rows in place, so rerunning finishes the job, and adding the same bytes again starts fresh.
 - After every ingest, any doc\_hash in the index with chunks but no member is purged. That finishes a replace that was killed between the upsert and the delete.
 - Judgments that reference a replaced doc\_hash are flagged as stale.
 - The ingest worker is the only heavy writer. The API writes only query logs and status updates, with a busy timeout.

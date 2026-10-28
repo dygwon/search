@@ -32,15 +32,13 @@ async def remove_file(
         raise NotInIndexError(path, index.name)
     [doc_hash] = row
 
-    async def delete() -> None:
-        with conn:
-            conn.execute(
-                "DELETE FROM index_members WHERE index_id = ? AND source_path = ?",
-                (index.index_id, str(path)),
-            )
-        await purge(conn, store, data_dir, index, doc_hash)
-
-    await run_stage_async(conn, index.index_id, doc_hash, DELETE_STAGE, delete)
+    await run_stage_async(
+        conn,
+        index.index_id,
+        doc_hash,
+        DELETE_STAGE,
+        lambda: purge(conn, store, data_dir, index, doc_hash, removing=path),
+    )
     return doc_hash
 
 
@@ -58,23 +56,39 @@ async def purge_orphans(
 
 
 async def purge(
-    conn: sqlite3.Connection, store: QdrantStore, data_dir: Path, index: Index, doc_hash: str
+    conn: sqlite3.Connection,
+    store: QdrantStore,
+    data_dir: Path,
+    index: Index,
+    doc_hash: str,
+    removing: Path | None = None,
 ) -> None:
-    """Delete one version from the index unless another path still has the same bytes."""
-    if conn.execute(
-        "SELECT 1 FROM index_members WHERE index_id = ? AND doc_hash = ?",
-        (index.index_id, doc_hash),
-    ).fetchone():
-        return
-    # Qdrant goes first: while chunks rows remain, a rerun can still find this version.
-    await store.delete_doc(index.collection, doc_hash)
+    """Delete one version from the index unless another path still has the same bytes.
+
+    `removing` is the member being taken out. Its row goes in the last transaction, so a
+    killed run leaves it in place and rerunning rm finishes the job.
+    """
+    removing_path = str(removing) if removing is not None else None
+    shared = conn.execute(
+        "SELECT 1 FROM index_members WHERE index_id = ? AND doc_hash = ? AND source_path IS NOT ?",
+        (index.index_id, doc_hash, removing_path),
+    ).fetchone()
+    # SQLite goes last: while its rows remain, a rerun can still find this version.
+    if not shared:
+        await store.delete_doc(index.collection, doc_hash)
+        vectors_path(data_dir, index, doc_hash).unlink(missing_ok=True)
     with conn:
+        if not shared:
+            conn.execute(
+                "DELETE FROM chunks WHERE index_id = ? AND doc_hash = ?",
+                (index.index_id, doc_hash),
+            )
+            # Stale "done" stages would skip the upsert if these bytes are added again.
+            conn.execute(
+                "DELETE FROM jobs WHERE index_id = ? AND doc_hash = ? AND stage != ?",
+                (index.index_id, doc_hash, DELETE_STAGE),
+            )
         conn.execute(
-            "DELETE FROM chunks WHERE index_id = ? AND doc_hash = ?", (index.index_id, doc_hash)
+            "DELETE FROM index_members WHERE index_id = ? AND source_path = ?",
+            (index.index_id, removing_path),
         )
-        # Stale "done" stages would skip the upsert if these bytes are added again.
-        conn.execute(
-            "DELETE FROM jobs WHERE index_id = ? AND doc_hash = ? AND stage != ?",
-            (index.index_id, doc_hash, DELETE_STAGE),
-        )
-    vectors_path(data_dir, index, doc_hash).unlink(missing_ok=True)

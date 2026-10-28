@@ -181,3 +181,32 @@ async def test_a_removed_file_can_be_ingested_again(conn, store, data_dir, index
 
     assert again.status == "ingested"
     assert await point_count(store, index, again.doc_hash) == again.chunks
+
+
+class DiesAfterDelete(QdrantStore):
+    """A store whose first delete goes through, then dies before Locus hears back."""
+
+    def __init__(self, client):
+        super().__init__(client)
+        self.killed = False
+
+    async def delete_doc(self, collection, doc_hash):
+        await super().delete_doc(collection, doc_hash)
+        if not self.killed:
+            self.killed = True
+            raise KeyboardInterrupt
+
+
+async def test_rerunning_a_killed_rm_finishes_the_cleanup(conn, store, data_dir, index, pdf):
+    ingested = await ingest_file(conn, store, backends(), data_dir, index, pdf)
+    dies = DiesAfterDelete(store.client)
+    with pytest.raises(KeyboardInterrupt):
+        await remove_file(conn, dies, data_dir, index, pdf)
+
+    await remove_file(conn, dies, data_dir, index, pdf)
+
+    assert chunk_rows(conn, ingested.doc_hash) == []
+    assert await point_count(store, index, ingested.doc_hash) == 0
+    assert conn.execute("SELECT count(*) FROM index_members").fetchone() == (0,)
+    assert job_rows(conn, ingested.doc_hash) == [("delete", "done")]
+    assert not vectors_path(data_dir, index, ingested.doc_hash).exists()
