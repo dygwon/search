@@ -45,6 +45,22 @@ class QdrantStore:
         for start in range(0, len(points), UPSERT_BATCH):
             await self.client.upsert(collection, points[start : start + UPSERT_BATCH], wait=True)
 
+    async def delete_doc(self, collection: str, doc_hash: str) -> None:
+        """Delete every point of one document version; deleting none is not an error."""
+        await self.client.delete(
+            collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="doc_hash", match=models.MatchValue(value=doc_hash)
+                        )
+                    ]
+                )
+            ),
+            wait=True,
+        )
+
     async def query(
         self,
         collection: str,

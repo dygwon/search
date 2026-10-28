@@ -15,6 +15,7 @@ from locus_ingest.chunk import write_chunks
 from locus_ingest.embed import embed, upsert
 from locus_ingest.parse import DocumentParser, parse
 from locus_ingest.register import check_pdf, hash_file, register
+from locus_ingest.remove import purge_orphans
 from locus_ingest.title import resolve_title
 
 
@@ -35,7 +36,8 @@ class Ingested:
     path: Path
     doc_hash: str
     title: str
-    # "ingested" when any stage after register ran, "unchanged" when all were already done.
+    # "replaced" when the path held other bytes before, "ingested" when any stage after
+    # register ran, "unchanged" when all were already done.
     status: str
     chunks: int
 
@@ -60,6 +62,11 @@ async def ingest_file(
 
     def done(name):
         return stage_done(conn, index.index_id, doc_hash, name)
+
+    previous = conn.execute(
+        "SELECT doc_hash FROM index_members WHERE index_id = ? AND source_path = ?",
+        (index.index_id, str(path)),
+    ).fetchone()
 
     # Register always runs: it's what adds these bytes at a new path to the index.
     stage("register", lambda: register(conn, index, path, doc_hash))
@@ -108,4 +115,12 @@ async def ingest_file(
             " WHERE index_id = ? AND source_path = ?",
             (datetime.now(UTC).isoformat(), index.index_id, str(path)),
         )
-    return Ingested(path, doc_hash, title, "ingested" if pending else "unchanged", chunks)
+    # The new version is searchable, so the old one can go. Sweeping every orphan, not just
+    # `previous`, also finishes a replace that was killed before this point.
+    await purge_orphans(conn, store, data_dir, index)
+
+    if previous is not None and previous[0] != doc_hash:
+        status = "replaced"
+    else:
+        status = "ingested" if pending else "unchanged"
+    return Ingested(path, doc_hash, title, status, chunks)
