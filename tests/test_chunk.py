@@ -114,3 +114,91 @@ def test_no_chunk_exceeds_the_budget_counting_special_tokens():
 
     assert len(chunks) > 4
     assert max(c.token_count for c in chunks) <= 64
+
+
+def figure_doc(before=None, after=None):
+    """Body text around a captioned picture, as Docling parses papers."""
+    doc = DoclingDocument(name="figure")
+    if before:
+        doc.add_text(label=DocItemLabel.TEXT, text=before)
+    # Docling nests the caption under its picture and lists it in the picture's captions.
+    picture = doc.add_picture()
+    caption = doc.add_text(
+        label=DocItemLabel.CAPTION, text="Figure 1: Recall at 10.", parent=picture
+    )
+    picture.captions.append(caption.get_ref())
+    if after:
+        doc.add_text(label=DocItemLabel.TEXT, text=after)
+    return doc
+
+
+def test_a_chunk_ending_on_a_caption_is_located_at_its_figure():
+    doc = figure_doc(before="Results are below.")
+    # The caption renders as the start of its picture's text.
+    document_text = "Results are below.\n\nFigure 1: Recall at 10."
+
+    [chunk] = chunk_document(doc, WhitespaceTokenizer())
+
+    assert (chunk.char_start, chunk.char_end) == (0, len(document_text))
+
+
+def test_a_chunk_starting_on_a_caption_is_located_at_its_figure():
+    doc = figure_doc(after="Recall rises with k.")
+
+    [chunk] = chunk_document(doc, WhitespaceTokenizer())
+
+    assert chunk.char_start == 0
+    assert chunk.text.startswith("Figure 1: Recall at 10.")
+
+
+def test_a_caption_alone_is_located_at_its_figure():
+    [chunk] = chunk_document(figure_doc(), WhitespaceTokenizer())
+
+    assert (chunk.char_start, chunk.char_end) == (0, len("Figure 1: Recall at 10."))
+
+
+def captioned_table(doc, rows):
+    """A table with its caption nested under it, as Docling parses papers."""
+    table = doc.add_table(data=table_data(rows))
+    caption = doc.add_text(label=DocItemLabel.CAPTION, text="Table 1: Prices.", parent=table)
+    table.captions.append(caption.get_ref())
+    return table
+
+
+PRICE_ROWS = [["fruit", "price"]] + [[f"fruit{i}", str(i)] for i in range(40)]
+
+
+def test_a_caption_and_its_table_span_the_table_once():
+    doc = DoclingDocument(name="table")
+    doc.add_text(label=DocItemLabel.TEXT, text="Prices below.")
+    captioned_table(doc, [["fruit", "price"], ["pear", "2"]])
+    document_text = "Prices below.\n\nTable 1: Prices.\n\npear, price = 2"
+
+    [chunk] = chunk_document(doc, WhitespaceTokenizer())
+
+    assert (chunk.char_start, chunk.char_end) == (0, len(document_text))
+
+
+def test_a_table_over_the_budget_becomes_pieces_of_one_span():
+    doc = DoclingDocument(name="table")
+    captioned_table(doc, PRICE_ROWS)
+
+    chunks = chunk_document(doc, WhitespaceTokenizer(max_tokens=30))
+
+    assert len(chunks) > 1
+    assert len({(c.char_start, c.char_end) for c in chunks}) == 1
+    assert [c.piece for c in chunks] == list(range(len(chunks)))
+    assert all(c.modality == "table" for c in chunks[1:])
+
+
+def test_a_table_after_a_full_paragraph_starts_its_own_chunk():
+    doc = DoclingDocument(name="table")
+    para = " ".join(f"w{i}" for i in range(25))
+    doc.add_text(label=DocItemLabel.TEXT, text=para)
+    captioned_table(doc, PRICE_ROWS[:6])
+
+    first, second = chunk_document(doc, WhitespaceTokenizer(max_tokens=30))
+
+    assert (first.char_start, first.char_end) == (0, len(para))
+    assert second.char_start == len(para) + 2
+    assert (first.piece, second.piece) == (0, 0)
